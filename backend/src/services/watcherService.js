@@ -1,13 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { fingerprintFile } from "../util/fingerprint.js";
 
 export class WatcherService {
-  constructor({ copyService, runtimeState, broadcaster, fileRepository }) {
+  constructor({ copyService, runtimeState, broadcaster }) {
     this.copyService = copyService;
     this.runtimeState = runtimeState;
     this.broadcaster = broadcaster;
-    this.fileRepository = fileRepository;
     this.scanIntervals = new Map();
     this.fileStates = new Map();
   }
@@ -117,21 +115,8 @@ export class WatcherService {
 
       if (existing.status === "pending") {
         if (stat.size === existing.size) {
-          const fingerprintResult = await fingerprintFile(filePath);
-          const fingerprint = fingerprintResult.fingerprint;
-          const alreadyCopied = await this.fileRepository.findByFingerprint(
-            fingerprint,
-            association.input
-          );
-          if (alreadyCopied?.status === "COPIED") {
-            existing.status = "ignored";
-            existing.size = stat.size;
-            existing.fingerprint = fingerprint;
-          } else {
-            existing.status = "to_copy";
-            existing.size = stat.size;
-            existing.fingerprint = fingerprint;
-          }
+          existing.status = "to_copy";
+          existing.size = stat.size;
         } else {
           existing.size = stat.size;
         }

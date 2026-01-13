@@ -29,12 +29,7 @@ const copyService = new CopyService({
   runtimeState,
   broadcaster
 });
-const watcherService = new WatcherService({
-  copyService,
-  runtimeState,
-  broadcaster,
-  fileRepository
-});
+const watcherService = new WatcherService({ copyService, runtimeState, broadcaster });
 
 const effectiveConfig = await associationService.getEffectiveConfig();
 runtimeState.setAssociations(effectiveConfig.associations);
