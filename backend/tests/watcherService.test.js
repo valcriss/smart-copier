@@ -95,16 +95,17 @@ describe("WatcherService", () => {
     const filePath = path.join(root, "file.txt");
     const nestedDir = path.join(root, "nested");
     const nestedFile = path.join(nestedDir, "file2.txt");
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-out-"));
     fs.writeFileSync(filePath, "data");
     fs.mkdirSync(nestedDir);
     fs.writeFileSync(nestedFile, "data");
 
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    runtimeState.setAssociations([{ id: "a", input: root, output: "/out" }]);
+    runtimeState.setAssociations([{ id: "a", input: root, output: outputRoot }]);
 
     await service.rescanAll({ scanIntervalSeconds: 10 });
     expect(copyService.enqueue).toHaveBeenCalledWith(filePath, expect.anything(), expect.anything());
     expect(copyService.enqueue).toHaveBeenCalledWith(nestedFile, expect.anything(), expect.anything());
-    expect(fs.existsSync(path.join("/out", "nested"))).toBe(true);
+    expect(fs.existsSync(path.join(outputRoot, "nested"))).toBe(true);
   });
 });
