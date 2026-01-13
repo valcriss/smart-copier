@@ -28,6 +28,7 @@ describe("WatcherService", () => {
   let runtimeState;
   let copyService;
   let broadcaster;
+  let inputRoot;
   let outputRoot;
 
   beforeEach(() => {
@@ -36,12 +37,13 @@ describe("WatcherService", () => {
     runtimeState = new RuntimeState();
     copyService = { enqueue: vi.fn() };
     broadcaster = { broadcast: vi.fn() };
+    inputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-in-"));
     outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-out-"));
   });
 
   it("starts and stops watchers", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -52,7 +54,7 @@ describe("WatcherService", () => {
 
   it("marks error on watcher failure", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -63,7 +65,7 @@ describe("WatcherService", () => {
 
   it("uses fallback error message", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -75,13 +77,13 @@ describe("WatcherService", () => {
     vi.useFakeTimers();
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
     const rescanSpy = vi.spyOn(service, "rescanAssociation").mockResolvedValue();
-    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
       scanIntervalSeconds: 1
     });
 
-    watcherInstances[0].handlers.add("/in/file.txt");
-    watcherInstances[0].handlers.change("/in/file.txt");
-    watcherInstances[0].handlers.addDir("/in/nested");
+    watcherInstances[0].handlers.add(path.join(inputRoot, "file.txt"));
+    watcherInstances[0].handlers.change(path.join(inputRoot, "file.txt"));
+    watcherInstances[0].handlers.addDir(path.join(inputRoot, "nested"));
     expect(copyService.enqueue).toHaveBeenCalledTimes(2);
 
     vi.advanceTimersByTime(1000);
@@ -96,16 +98,43 @@ describe("WatcherService", () => {
     const mkdirSpy = vi.spyOn(fs.promises, "mkdir").mockResolvedValue();
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
     const rescanSpy = vi.spyOn(service, "rescanAssociation").mockResolvedValue();
-    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
-    watcherInstances[0].handlers.addDir("/in");
+    watcherInstances[0].handlers.addDir(inputRoot);
     expect(mkdirSpy).not.toHaveBeenCalled();
     expect(rescanSpy).toHaveBeenCalled();
 
     service.stop();
     mkdirSpy.mockRestore();
+  });
+
+  it("logs rescan errors", async () => {
+    const service = new WatcherService({ copyService, runtimeState, broadcaster });
+    vi.spyOn(service, "rescanAssociation").mockRejectedValueOnce(new Error("rescan fail"));
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
+      scanIntervalSeconds: 10
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(runtimeState.taskStatus).toBe("error");
+    expect(runtimeState.logs[0].message).toBe("rescan fail");
+    service.stop();
+  });
+
+  it("uses fallback rescan error message", async () => {
+    const service = new WatcherService({ copyService, runtimeState, broadcaster });
+    vi.spyOn(service, "rescanAssociation").mockRejectedValueOnce({});
+    service.start([{ id: "a", input: inputRoot, output: outputRoot }], {
+      scanIntervalSeconds: 10
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(runtimeState.logs[0].message).toBe("Rescan error");
+    service.stop();
   });
 
   it("rescans directories", async () => {

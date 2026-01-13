@@ -48,6 +48,16 @@ export class WatcherService {
 
       this.watchers.set(assoc.id, watcher);
 
+      void this.rescanAssociation(assoc, config).catch((error) => {
+        this.runtimeState.setTaskStatus("error");
+        this.runtimeState.addLog({
+          time: new Date().toISOString(),
+          level: "error",
+          message: error.message ?? "Rescan error"
+        });
+        this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+      });
+
       const interval = setInterval(() => {
         this.rescanAssociation(assoc, config);
       }, config.scanIntervalSeconds * 1000);
