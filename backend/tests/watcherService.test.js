@@ -28,6 +28,7 @@ describe("WatcherService", () => {
   let runtimeState;
   let copyService;
   let broadcaster;
+  let outputRoot;
 
   beforeEach(() => {
     watcherInstances.length = 0;
@@ -35,11 +36,12 @@ describe("WatcherService", () => {
     runtimeState = new RuntimeState();
     copyService = { enqueue: vi.fn() };
     broadcaster = { broadcast: vi.fn() };
+    outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-out-"));
   });
 
   it("starts and stops watchers", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: "/out" }], {
+    service.start([{ id: "a", input: "/in", output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -50,7 +52,7 @@ describe("WatcherService", () => {
 
   it("marks error on watcher failure", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: "/out" }], {
+    service.start([{ id: "a", input: "/in", output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -61,7 +63,7 @@ describe("WatcherService", () => {
 
   it("uses fallback error message", () => {
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
-    service.start([{ id: "a", input: "/in", output: "/out" }], {
+    service.start([{ id: "a", input: "/in", output: outputRoot }], {
       scanIntervalSeconds: 10
     });
 
@@ -73,7 +75,7 @@ describe("WatcherService", () => {
     vi.useFakeTimers();
     const service = new WatcherService({ copyService, runtimeState, broadcaster });
     const rescanSpy = vi.spyOn(service, "rescanAssociation").mockResolvedValue();
-    service.start([{ id: "a", input: "/in", output: "/out" }], {
+    service.start([{ id: "a", input: "/in", output: outputRoot }], {
       scanIntervalSeconds: 1
     });
 
@@ -95,7 +97,6 @@ describe("WatcherService", () => {
     const filePath = path.join(root, "file.txt");
     const nestedDir = path.join(root, "nested");
     const nestedFile = path.join(nestedDir, "file2.txt");
-    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-out-"));
     fs.writeFileSync(filePath, "data");
     fs.mkdirSync(nestedDir);
     fs.writeFileSync(nestedFile, "data");
