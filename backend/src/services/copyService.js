@@ -56,7 +56,8 @@ export class CopyService {
       const fingerprintResult = await fingerprintFile(filePath);
       fingerprint = fingerprintResult.fingerprint;
       const size = fingerprintResult.size;
-      const existing = await this.fileRepository.findByFingerprint(fingerprint);
+      const sourceRoot = association.input;
+      const existing = await this.fileRepository.findByFingerprint(fingerprint, sourceRoot);
       if (existing?.status === "COPIED") {
         return;
       }
@@ -71,6 +72,7 @@ export class CopyService {
           fingerprint,
           filename,
           sourcePath: filePath,
+          sourceRoot,
           destinationPath,
           size,
           status: "PENDING",
@@ -78,7 +80,7 @@ export class CopyService {
         });
       }
 
-      await this.fileRepository.markCopying(fingerprint);
+      await this.fileRepository.markCopying(fingerprint, sourceRoot);
       this.runtimeState.setAssociationStatus(association.id, "copying", {
         filename,
         sourcePath: filePath,
@@ -94,6 +96,7 @@ export class CopyService {
       if (config.dryRun) {
         await this.fileRepository.markCopied(
           fingerprint,
+          sourceRoot,
           destinationPath,
           new Date().toISOString()
         );
@@ -112,6 +115,7 @@ export class CopyService {
       );
       await this.fileRepository.markCopied(
         fingerprint,
+        sourceRoot,
         destinationPath,
         new Date().toISOString()
       );
@@ -123,7 +127,7 @@ export class CopyService {
       }
       const message = error instanceof Error ? error.message : "Unknown error";
       if (fingerprint) {
-        await this.fileRepository.markFailed(fingerprint, message);
+        await this.fileRepository.markFailed(fingerprint, association.input, message);
       }
       this.runtimeState.setAssociationStatus(association.id, "error", null);
       this.runtimeState.addLog({

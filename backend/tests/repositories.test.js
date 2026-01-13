@@ -17,10 +17,11 @@ vi.mock("sqlite3", () => {
           fingerprint: values[0],
           filename: values[1],
           source_path: values[2],
-          destination_path: values[3],
-          size: values[4],
-          status: values[5],
-          first_seen_at: values[6],
+          source_root: values[3],
+          destination_path: values[4],
+          size: values[5],
+          status: values[6],
+          first_seen_at: values[7],
           copied_at: null,
           error_message: null
         };
@@ -35,8 +36,10 @@ vi.mock("sqlite3", () => {
         }
       }
       if (sql.includes("UPDATE files") && sql.includes("WHERE fingerprint")) {
-        const [status, copiedAt, destinationPath, errorMessage, fingerprint] = values;
-        const file = this.storage.files.find((item) => item.fingerprint === fingerprint);
+        const [status, copiedAt, destinationPath, errorMessage, fingerprint, sourceRoot] = values;
+        const file = this.storage.files.find(
+          (item) => item.fingerprint === fingerprint && item.source_root === sourceRoot
+        );
         if (file) {
           file.status = status;
           file.copied_at = copiedAt;
@@ -56,7 +59,9 @@ vi.mock("sqlite3", () => {
         return;
       }
       if (sql.includes("FROM files")) {
-        const item = this.storage.files.find((file) => file.fingerprint === params[0]);
+        const item = this.storage.files.find(
+          (file) => file.fingerprint === params[0] && file.source_root === params[1]
+        );
         cb(null, item);
         return;
       }
@@ -113,26 +118,27 @@ describe("FileRepository", () => {
       fingerprint: "fp-1",
       filename: "file.txt",
       sourcePath: "/mnt/src/file.txt",
+      sourceRoot: "/mnt/src",
       destinationPath: "/mnt/dst/file.txt",
       size: 10,
       status: "PENDING",
       firstSeenAt: "now"
     });
 
-    const stored = await fileRepository.findByFingerprint("fp-1");
+    const stored = await fileRepository.findByFingerprint("fp-1", "/mnt/src");
     expect(stored.status).toBe("PENDING");
 
-    await fileRepository.markCopying("fp-1");
-    const copying = await fileRepository.findByFingerprint("fp-1");
+    await fileRepository.markCopying("fp-1", "/mnt/src");
+    const copying = await fileRepository.findByFingerprint("fp-1", "/mnt/src");
     expect(copying.status).toBe("COPYING");
 
-    await fileRepository.markCopied("fp-1", "/mnt/dst/file.txt", "later");
-    const copied = await fileRepository.findByFingerprint("fp-1");
+    await fileRepository.markCopied("fp-1", "/mnt/src", "/mnt/dst/file.txt", "later");
+    const copied = await fileRepository.findByFingerprint("fp-1", "/mnt/src");
     expect(copied.status).toBe("COPIED");
     expect(copied.destination_path).toBe("/mnt/dst/file.txt");
 
-    await fileRepository.markFailed("fp-1", "boom");
-    const failed = await fileRepository.findByFingerprint("fp-1");
+    await fileRepository.markFailed("fp-1", "/mnt/src", "boom");
+    const failed = await fileRepository.findByFingerprint("fp-1", "/mnt/src");
     expect(failed.status).toBe("FAILED");
     expect(failed.error_message).toBe("boom");
 
@@ -145,6 +151,7 @@ describe("FileRepository", () => {
       fingerprint: "fp-2",
       filename: "file2.txt",
       sourcePath: "/mnt/src/file2.txt",
+      sourceRoot: "/mnt/src",
       destinationPath: "/mnt/dst/file2.txt",
       size: 5,
       status: "COPYING",
@@ -152,7 +159,7 @@ describe("FileRepository", () => {
     });
 
     await fileRepository.failInProgress();
-    const failed = await fileRepository.findByFingerprint("fp-2");
+    const failed = await fileRepository.findByFingerprint("fp-2", "/mnt/src");
     expect(failed.status).toBe("FAILED");
   });
 });

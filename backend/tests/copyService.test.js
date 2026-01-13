@@ -22,32 +22,33 @@ class MemoryFileRepository {
     this.files = new Map();
   }
 
-  async findByFingerprint(fingerprint) {
-    return this.files.get(fingerprint);
+  async findByFingerprint(fingerprint, sourceRoot) {
+    return this.files.get(`${fingerprint}:${sourceRoot}`);
   }
 
   async insertPending(file) {
-    this.files.set(file.fingerprint, {
+    this.files.set(`${file.fingerprint}:${file.sourceRoot}`, {
       fingerprint: file.fingerprint,
+      source_root: file.sourceRoot,
       status: file.status,
       destination_path: file.destinationPath,
       error_message: null
     });
   }
 
-  async markCopying(fingerprint) {
-    const entry = this.files.get(fingerprint);
+  async markCopying(fingerprint, sourceRoot) {
+    const entry = this.files.get(`${fingerprint}:${sourceRoot}`);
     entry.status = "COPYING";
   }
 
-  async markCopied(fingerprint, destinationPath) {
-    const entry = this.files.get(fingerprint);
+  async markCopied(fingerprint, sourceRoot, destinationPath) {
+    const entry = this.files.get(`${fingerprint}:${sourceRoot}`);
     entry.status = "COPIED";
     entry.destination_path = destinationPath;
   }
 
-  async markFailed(fingerprint, errorMessage) {
-    const entry = this.files.get(fingerprint);
+  async markFailed(fingerprint, sourceRoot, errorMessage) {
+    const entry = this.files.get(`${fingerprint}:${sourceRoot}`);
     entry.status = "FAILED";
     entry.error_message = errorMessage;
   }
@@ -94,7 +95,10 @@ describe("CopyService", () => {
     });
 
     const result = await fingerprintFile(filePath);
-    repo.files.set(result.fingerprint, { status: "COPIED" });
+    repo.files.set(`${result.fingerprint}:${sourceRoot}`, {
+      status: "COPIED",
+      source_root: sourceRoot
+    });
 
     copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],

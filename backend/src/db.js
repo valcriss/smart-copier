@@ -43,17 +43,68 @@ export async function initDatabase(db) {
   await db.run(`
     CREATE TABLE IF NOT EXISTS files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      fingerprint TEXT UNIQUE,
+      fingerprint TEXT NOT NULL,
       filename TEXT NOT NULL,
       source_path TEXT NOT NULL,
+      source_root TEXT NOT NULL,
       destination_path TEXT,
       size INTEGER NOT NULL,
       status TEXT NOT NULL,
       first_seen_at TEXT NOT NULL,
       copied_at TEXT,
-      error_message TEXT
+      error_message TEXT,
+      UNIQUE(fingerprint, source_root)
     )
   `);
+
+  const columns = await db.all("PRAGMA table_info(files)");
+  const hasSourceRoot = columns.some((column) => column.name === "source_root");
+  if (columns.length > 0 && !hasSourceRoot) {
+    await db.run("ALTER TABLE files RENAME TO files_old");
+    await db.run(`
+      CREATE TABLE files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        source_root TEXT NOT NULL,
+        destination_path TEXT,
+        size INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        copied_at TEXT,
+        error_message TEXT,
+        UNIQUE(fingerprint, source_root)
+      )
+    `);
+    await db.run(`
+      INSERT INTO files (
+        fingerprint,
+        filename,
+        source_path,
+        source_root,
+        destination_path,
+        size,
+        status,
+        first_seen_at,
+        copied_at,
+        error_message
+      )
+      SELECT
+        fingerprint,
+        filename,
+        source_path,
+        source_path,
+        destination_path,
+        size,
+        status,
+        first_seen_at,
+        copied_at,
+        error_message
+      FROM files_old
+    `);
+    await db.run("DROP TABLE files_old");
+  }
 
   await db.run(`
     CREATE TABLE IF NOT EXISTS config (

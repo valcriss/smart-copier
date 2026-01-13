@@ -1,6 +1,6 @@
 # Smart Copier
 
-Smart Copier copie automatiquement les fichiers d'un repertoire source vers un repertoire destination une seule fois par empreinte de contenu, avec suivi temps reel via SSE et historique persistant SQLite.
+Smart Copier copie automatiquement les fichiers d'un repertoire source vers un repertoire destination une seule fois par empreinte de contenu et par racine source, avec suivi temps reel via SSE et historique persistant SQLite.
 La tache de surveillance demarre automatiquement au lancement du serveur.
 
 ## Structure

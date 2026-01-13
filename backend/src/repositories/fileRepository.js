@@ -3,8 +3,11 @@ export class FileRepository {
     this.db = db;
   }
 
-  async findByFingerprint(fingerprint) {
-    return this.db.get("SELECT * FROM files WHERE fingerprint = ?", [fingerprint]);
+  async findByFingerprint(fingerprint, sourceRoot) {
+    return this.db.get("SELECT * FROM files WHERE fingerprint = ? AND source_root = ?", [
+      fingerprint,
+      sourceRoot
+    ]);
   }
 
   async insertPending(file) {
@@ -14,16 +17,18 @@ export class FileRepository {
         fingerprint,
         filename,
         source_path,
+        source_root,
         destination_path,
         size,
         status,
         first_seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         file.fingerprint,
         file.filename,
         file.sourcePath,
+        file.sourceRoot,
         file.destinationPath,
         file.size,
         file.status,
@@ -32,7 +37,7 @@ export class FileRepository {
     );
   }
 
-  async updateStatus(fingerprint, status, fields = {}) {
+  async updateStatus(fingerprint, sourceRoot, status, fields = {}) {
     const copiedAt = fields.copiedAt ?? null;
     const destinationPath = fields.destinationPath ?? null;
     const errorMessage = fields.errorMessage ?? null;
@@ -43,22 +48,22 @@ export class FileRepository {
           copied_at = ?,
           destination_path = ?,
           error_message = ?
-      WHERE fingerprint = ?
+      WHERE fingerprint = ? AND source_root = ?
       `,
-      [status, copiedAt, destinationPath, errorMessage, fingerprint]
+      [status, copiedAt, destinationPath, errorMessage, fingerprint, sourceRoot]
     );
   }
 
-  async markCopying(fingerprint) {
-    await this.updateStatus(fingerprint, "COPYING");
+  async markCopying(fingerprint, sourceRoot) {
+    await this.updateStatus(fingerprint, sourceRoot, "COPYING");
   }
 
-  async markCopied(fingerprint, destinationPath, copiedAt) {
-    await this.updateStatus(fingerprint, "COPIED", { destinationPath, copiedAt });
+  async markCopied(fingerprint, sourceRoot, destinationPath, copiedAt) {
+    await this.updateStatus(fingerprint, sourceRoot, "COPIED", { destinationPath, copiedAt });
   }
 
-  async markFailed(fingerprint, errorMessage) {
-    await this.updateStatus(fingerprint, "FAILED", { errorMessage });
+  async markFailed(fingerprint, sourceRoot, errorMessage) {
+    await this.updateStatus(fingerprint, sourceRoot, "FAILED", { errorMessage });
   }
 
   async listHistory(limit = 200) {
