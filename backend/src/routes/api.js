@@ -84,14 +84,18 @@ async function resolveAllowedRoots(envConfig) {
   };
 }
 
-async function listSubdirectories(roots) {
+async function listSubdirectories(roots, depth = 2) {
   const results = [];
   for (const root of roots) {
     try {
       const entries = await fs.promises.readdir(root, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
-          results.push(toPosixPath(root, entry.name));
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        results.push(toPosixPath(root, entry.name));
+        if (depth > 1) {
+          await appendSecondLevel(results, root, entry.name);
         }
       }
     } catch {
@@ -101,7 +105,21 @@ async function listSubdirectories(roots) {
   return results;
 }
 
-function toPosixPath(root, name) {
+async function appendSecondLevel(results, root, entryName) {
+  try {
+    const nestedPath = path.join(root, entryName);
+    const nestedEntries = await fs.promises.readdir(nestedPath, { withFileTypes: true });
+    for (const nestedEntry of nestedEntries) {
+      if (nestedEntry.isDirectory()) {
+        results.push(toPosixPath(root, entryName, nestedEntry.name));
+      }
+    }
+  } catch {
+    // Ignore missing nested roots to keep UI responsive.
+  }
+}
+
+function toPosixPath(root, ...parts) {
   const normalizedRoot = root.replace(/\\/g, "/");
-  return path.posix.join(normalizedRoot, name);
+  return path.posix.join(normalizedRoot, ...parts);
 }

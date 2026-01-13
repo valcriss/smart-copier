@@ -92,6 +92,22 @@ describe("WatcherService", () => {
     vi.useRealTimers();
   });
 
+  it("ignores root addDir events", () => {
+    const mkdirSpy = vi.spyOn(fs.promises, "mkdir").mockResolvedValue();
+    const service = new WatcherService({ copyService, runtimeState, broadcaster });
+    const rescanSpy = vi.spyOn(service, "rescanAssociation").mockResolvedValue();
+    service.start([{ id: "a", input: "/in", output: outputRoot }], {
+      scanIntervalSeconds: 10
+    });
+
+    watcherInstances[0].handlers.addDir("/in");
+    expect(mkdirSpy).not.toHaveBeenCalled();
+    expect(rescanSpy).toHaveBeenCalled();
+
+    service.stop();
+    mkdirSpy.mockRestore();
+  });
+
   it("rescans directories", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-"));
     const filePath = path.join(root, "file.txt");

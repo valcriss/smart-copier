@@ -21,8 +21,13 @@ describe("API routes", () => {
   it("returns config", async () => {
     const readdirSpy = vi
       .spyOn(fs.promises, "readdir")
-      .mockResolvedValueOnce([{ name: "alpha", isDirectory: () => true }])
-      .mockResolvedValueOnce([{ name: "beta", isDirectory: () => true }]);
+      .mockResolvedValueOnce([
+        { name: "alpha", isDirectory: () => true },
+        { name: "alpha.txt", isDirectory: () => false }
+      ])
+      .mockResolvedValueOnce([{ name: "alpha-child", isDirectory: () => true }])
+      .mockResolvedValueOnce([{ name: "beta", isDirectory: () => true }])
+      .mockResolvedValueOnce([{ name: "beta-child", isDirectory: () => true }]);
     const runtimeState = new RuntimeState();
     const app = createApp({
       associationService: { getEffectiveConfig: async () => ({ associations: [] }) },
@@ -38,8 +43,38 @@ describe("API routes", () => {
 
     const response = await request(app).get("/api/config");
     expect(response.status).toBe(200);
+    expect(response.body.allowedRoots.source).toEqual([
+      path.posix.join("/sources", "alpha"),
+      path.posix.join("/sources", "alpha", "alpha-child")
+    ]);
+    expect(response.body.allowedRoots.destination).toEqual([
+      path.posix.join("/destinations", "beta"),
+      path.posix.join("/destinations", "beta", "beta-child")
+    ]);
+    expect(readdirSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it("ignores nested listing errors", async () => {
+    const readdirSpy = vi
+      .spyOn(fs.promises, "readdir")
+      .mockResolvedValueOnce([{ name: "alpha", isDirectory: () => true }])
+      .mockRejectedValueOnce(new Error("nested missing"));
+    const runtimeState = new RuntimeState();
+    const app = createApp({
+      associationService: { getEffectiveConfig: async () => ({ associations: [] }) },
+      watcherService: { start: vi.fn(), stop: vi.fn(), rescanAll: vi.fn() },
+      runtimeState,
+      fileRepository: { listHistory: async () => [] },
+      envConfig: {
+        getAllowedSourceRoots: () => ["/sources"],
+        getAllowedDestinationRoots: () => []
+      },
+      broadcaster: { addClient: vi.fn(), broadcast: vi.fn() }
+    });
+
+    const response = await request(app).get("/api/config");
+    expect(response.status).toBe(200);
     expect(response.body.allowedRoots.source).toEqual([path.posix.join("/sources", "alpha")]);
-    expect(response.body.allowedRoots.destination).toEqual([path.posix.join("/destinations", "beta")]);
     expect(readdirSpy).toHaveBeenCalledTimes(2);
   });
 
