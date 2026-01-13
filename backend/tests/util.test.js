@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import crypto from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -18,7 +19,11 @@ describe("util", () => {
     const { filePath } = createTempFile("hello");
     const result = await fingerprintFile(filePath);
     expect(result.size).toBe(5);
-    expect(result.fingerprint).toMatch(/^5-/);
+    const digest = crypto
+      .createHash("sha256")
+      .update(`${filePath}:${result.size}`)
+      .digest("hex");
+    expect(result.fingerprint).toBe(`${result.size}-${digest}`);
   });
 
   it("detects stable files", async () => {

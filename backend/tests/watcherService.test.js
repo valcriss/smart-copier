@@ -4,6 +4,8 @@ import os from "os";
 import path from "path";
 import { WatcherService } from "../src/services/watcherService.js";
 import { RuntimeState } from "../src/services/runtimeState.js";
+import { fingerprintFile } from "../src/util/fingerprint.js";
+import * as fingerprintModule from "../src/util/fingerprint.js";
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-"));
@@ -18,6 +20,7 @@ describe("WatcherService", () => {
   let runtimeState;
   let copyService;
   let broadcaster;
+  let fileRepository;
   let inputRoot;
   let outputRoot;
   let association;
@@ -27,6 +30,9 @@ describe("WatcherService", () => {
     runtimeState = new RuntimeState();
     copyService = { enqueueCopy: vi.fn(async () => "copied") };
     broadcaster = { broadcast: vi.fn() };
+    fileRepository = {
+      findByFingerprint: vi.fn(async () => null)
+    };
     inputRoot = createTempDir();
     outputRoot = createTempDir();
     association = { id: "a", input: inputRoot, output: outputRoot };
@@ -42,7 +48,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     service.start([association], config);
@@ -59,7 +66,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -80,7 +88,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, {
@@ -101,7 +110,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -113,13 +123,37 @@ describe("WatcherService", () => {
     expect(runtimeState.associations[0].toCopyCount).toBe(0);
   });
 
+  it("ignores already copied files immediately", async () => {
+    const filePath = path.join(inputRoot, "file.txt");
+    createFile(filePath, "content");
+    const fingerprint = await fingerprintFile(filePath);
+    fileRepository.findByFingerprint = vi.fn(async () => ({
+      status: "COPIED",
+      fingerprint: fingerprint.fingerprint
+    }));
+
+    const service = new WatcherService({
+      copyService,
+      runtimeState,
+      broadcaster,
+      fileRepository
+    });
+
+    await service.scanAssociation(association, config);
+
+    expect(copyService.enqueueCopy).not.toHaveBeenCalled();
+    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    expect(runtimeState.associations[0].toCopyCount).toBe(0);
+  });
+
   it("updates ignored files when size changes", async () => {
     const filePath = path.join(inputRoot, "file.txt");
     createFile(filePath, "content");
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     const state = new Map();
@@ -141,7 +175,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -157,7 +192,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     const state = new Map();
@@ -185,7 +221,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -204,7 +241,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -218,7 +256,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     const ignoredConfig = { ...config, ignoredExtensions: [".tmp"] };
@@ -234,7 +273,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     const statSpy = vi
@@ -251,7 +291,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -268,7 +309,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     const statSpy = vi
@@ -280,12 +322,50 @@ describe("WatcherService", () => {
     statSpy.mockRestore();
   });
 
+  it("ignores ENOENT during fingerprint", async () => {
+    const filePath = path.join(inputRoot, "file.txt");
+    createFile(filePath, "content");
+    const service = new WatcherService({
+      copyService,
+      runtimeState,
+      broadcaster,
+      fileRepository
+    });
+
+    const fingerprintSpy = vi
+      .spyOn(fingerprintModule, "fingerprintFile")
+      .mockRejectedValueOnce({ code: "ENOENT" });
+
+    await service.scanAssociation(association, config);
+    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    fingerprintSpy.mockRestore();
+  });
+
+  it("throws on unexpected fingerprint errors", async () => {
+    const filePath = path.join(inputRoot, "file.txt");
+    createFile(filePath, "content");
+    const service = new WatcherService({
+      copyService,
+      runtimeState,
+      broadcaster,
+      fileRepository
+    });
+
+    const fingerprintSpy = vi
+      .spyOn(fingerprintModule, "fingerprintFile")
+      .mockRejectedValueOnce(new Error("fingerprint fail"));
+
+    await expect(service.scanAssociation(association, config)).rejects.toThrow("fingerprint fail");
+    fingerprintSpy.mockRestore();
+  });
+
   it("logs scan errors on start and interval", async () => {
     vi.useFakeTimers();
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
     const scanSpy = vi
       .spyOn(service, "scanAssociation")
@@ -311,7 +391,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
     const scanSpy = vi
       .spyOn(service, "scanAssociation")
@@ -339,7 +420,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -359,7 +441,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
 
     await service.scanAssociation(association, config);
@@ -379,7 +462,8 @@ describe("WatcherService", () => {
     const service = new WatcherService({
       copyService,
       runtimeState,
-      broadcaster
+      broadcaster,
+      fileRepository
     });
     const scanSpy = vi.spyOn(service, "scanAssociation").mockResolvedValue();
 
