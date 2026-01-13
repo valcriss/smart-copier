@@ -34,24 +34,6 @@ export function buildApiRouter({
     }
   });
 
-  router.post("/start", async (req, res) => {
-    const config = await associationService.getEffectiveConfig();
-    watcherService.start(config.associations, config);
-    res.json({ status: "running" });
-  });
-
-  router.post("/stop", (req, res) => {
-    watcherService.stop();
-    broadcaster.broadcast("state", runtimeState.snapshot());
-    res.json({ status: "stopped" });
-  });
-
-  router.post("/rescan", async (req, res) => {
-    const config = await associationService.getEffectiveConfig();
-    await watcherService.rescanAll(config);
-    res.json({ status: "rescanning" });
-  });
-
   router.get("/status", (req, res) => {
     res.json(runtimeState.snapshot());
   });

@@ -26,27 +26,3 @@ export async function fetchHistory() {
   }
   return response.json();
 }
-
-export async function startService() {
-  const response = await fetch("/api/start", { method: "POST" });
-  if (!response.ok) {
-    throw new Error("Failed to start service");
-  }
-  return response.json();
-}
-
-export async function stopService() {
-  const response = await fetch("/api/stop", { method: "POST" });
-  if (!response.ok) {
-    throw new Error("Failed to stop service");
-  }
-  return response.json();
-}
-
-export async function rescanService() {
-  const response = await fetch("/api/rescan", { method: "POST" });
-  if (!response.ok) {
-    throw new Error("Failed to rescan");
-  }
-  return response.json();
-}

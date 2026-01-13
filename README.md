@@ -67,15 +67,12 @@ Volumes :
 ## Compose dev/prod
 
 - `docker-compose.dev.yml` : build local depuis les sources.
-- `docker-compose.yml` : build depuis `https://github.com/valcriss/smart-copier.git`.
+- `docker-compose.yml` : utilise l'image `ghcr.io/valcriss/smart-copier:latest`.
 
 ## API
 
 - `GET /api/config`
 - `PUT /api/config`
-- `POST /api/start`
-- `POST /api/stop`
-- `POST /api/rescan`
 - `GET /api/status`
 - `GET /api/history`
 - `GET /api/events` (SSE)

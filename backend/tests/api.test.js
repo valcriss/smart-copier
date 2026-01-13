@@ -226,29 +226,7 @@ describe("API routes", () => {
     expect(response.body.error).toBe("bad config");
   });
 
-  it("starts and stops service", async () => {
-    const runtimeState = new RuntimeState();
-    const watcherService = { start: vi.fn(), stop: vi.fn(), rescanAll: vi.fn() };
-    const app = createApp({
-      associationService: { getEffectiveConfig: async () => ({ associations: [] }) },
-      watcherService,
-      runtimeState,
-      fileRepository: { listHistory: async () => [] },
-      envConfig: {
-        getAllowedSourceRoots: () => ["/sources"],
-        getAllowedDestinationRoots: () => ["/destinations"]
-      },
-      broadcaster: { addClient: vi.fn(), broadcast: vi.fn() }
-    });
-
-    const startResponse = await request(app).post("/api/start");
-    const stopResponse = await request(app).post("/api/stop");
-
-    expect(startResponse.body.status).toBe("running");
-    expect(stopResponse.body.status).toBe("stopped");
-  });
-
-  it("rescans and returns status/history", async () => {
+  it("returns status/history", async () => {
     const runtimeState = new RuntimeState();
     const watcherService = { start: vi.fn(), stop: vi.fn(), rescanAll: vi.fn() };
     const app = createApp({
@@ -263,11 +241,9 @@ describe("API routes", () => {
       broadcaster: { addClient: vi.fn(), broadcast: vi.fn() }
     });
 
-    const rescanResponse = await request(app).post("/api/rescan");
     const statusResponse = await request(app).get("/api/status");
     const historyResponse = await request(app).get("/api/history");
 
-    expect(rescanResponse.body.status).toBe("rescanning");
     expect(statusResponse.body.running).toBe(false);
     expect(historyResponse.body.items.length).toBe(1);
   });
