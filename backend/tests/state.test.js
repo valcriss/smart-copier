@@ -11,16 +11,16 @@ describe("RuntimeState", () => {
     state.setRunning(true);
     state.setTaskStatus("error");
     state.setAssociationStatus("a", "copying", { filename: "file.txt" });
-    state.setAssociationVerifyingCount("a", 2);
-    state.setAssociationQueuedCount("a", 1);
+    state.setAssociationPendingCount("a", 2);
+    state.setAssociationToCopyCount("a", 1);
     state.addLog({ level: "info", message: "ok" });
 
     const snapshot = state.snapshot();
     expect(snapshot.running).toBe(true);
     expect(snapshot.taskStatus).toBe("error");
     expect(snapshot.associations[0].status).toBe("copying");
-    expect(snapshot.associations[0].verifyingCount).toBe(2);
-    expect(snapshot.associations[0].queuedCount).toBe(1);
+    expect(snapshot.associations[0].pendingCount).toBe(2);
+    expect(snapshot.associations[0].toCopyCount).toBe(1);
     expect(snapshot.logs.length).toBe(1);
   });
 
@@ -36,11 +36,11 @@ describe("RuntimeState", () => {
     const state = new RuntimeState();
     state.setAssociations([{ id: "a", input: "/sources/a", output: "/destinations/b" }]);
     state.setAssociationStatus("missing", "copying", { filename: "x" });
-    state.setAssociationVerifyingCount("missing", 3);
-    state.setAssociationQueuedCount("missing", 2);
+    state.setAssociationPendingCount("missing", 3);
+    state.setAssociationToCopyCount("missing", 2);
     expect(state.associations[0].status).toBe("idle");
-    expect(state.associations[0].verifyingCount).toBe(0);
-    expect(state.associations[0].queuedCount).toBe(0);
+    expect(state.associations[0].pendingCount).toBe(0);
+    expect(state.associations[0].toCopyCount).toBe(0);
   });
 });
 

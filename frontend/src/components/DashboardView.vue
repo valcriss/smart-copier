@@ -23,17 +23,22 @@
         :key="assoc.id"
         class="rounded-2xl border border-slate-800/70 bg-slate-900/60 p-5"
       >
-        <div class="flex items-start justify-between">
+        <div class="flex items-start justify-between gap-4">
           <div>
             <h3 class="font-display text-lg font-semibold text-slate-100">{{ assoc.input }}</h3>
             <p class="text-xs uppercase tracking-[0.3em] text-slate-500">{{ assoc.output }}</p>
+            <p class="mt-2 text-xs font-semibold uppercase" :class="statusTextClass(assoc)">
+              etat: {{ assoc.status }}
+            </p>
           </div>
-          <span
-            class="rounded-full px-3 py-1 text-xs font-semibold"
-            :class="statusClasses(assoc)"
-          >
-            {{ statusLabel(assoc) }}
-          </span>
+          <div class="flex flex-col items-end gap-2">
+            <span class="rounded-full bg-amber-500/20 px-3 py-1 text-xs font-semibold text-amber-200">
+              {{ pendingCount(assoc) }} fichiers en attente
+            </span>
+            <span class="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">
+              {{ toCopyCount(assoc) }} fichiers a copier
+            </span>
+          </div>
         </div>
 
         <div v-if="assoc.currentFile" class="mt-4 space-y-2">
@@ -91,30 +96,22 @@ const editing = ref(null);
 
 const hasActiveCopy = computed(() => state.associations.some((assoc) => assoc.status === "copying"));
 
-function statusClasses(assoc) {
+function statusTextClass(assoc) {
   if (assoc.status === "copying") {
-    return "bg-cyan-500/20 text-cyan-200";
+    return "text-cyan-200";
   }
   if (assoc.status === "error") {
-    return "bg-rose-500/20 text-rose-200";
+    return "text-rose-200";
   }
-  if (assoc.verifyingCount > 0 || assoc.queuedCount > 0) {
-    return "bg-amber-500/20 text-amber-200";
-  }
-  return "bg-slate-800 text-slate-300";
+  return "text-slate-400";
 }
 
-function statusLabel(assoc) {
-  if (assoc.status === "copying") {
-    return "copying";
-  }
-  if (assoc.status === "error") {
-    return "error";
-  }
-  if (assoc.verifyingCount > 0 || assoc.queuedCount > 0) {
-    return `${assoc.verifyingCount} fichiers en verification, ${assoc.queuedCount} fichiers a copier`;
-  }
-  return "idle";
+function pendingCount(assoc) {
+  return assoc.pendingCount ?? 0;
+}
+
+function toCopyCount(assoc) {
+  return assoc.toCopyCount ?? 0;
 }
 
 function openCreate() {

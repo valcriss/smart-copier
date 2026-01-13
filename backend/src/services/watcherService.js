@@ -1,14 +1,15 @@
-import chokidar from "chokidar";
 import fs from "fs";
 import path from "path";
+import { fingerprintFile } from "../util/fingerprint.js";
 
 export class WatcherService {
-  constructor({ copyService, runtimeState, broadcaster }) {
+  constructor({ copyService, runtimeState, broadcaster, fileRepository }) {
     this.copyService = copyService;
     this.runtimeState = runtimeState;
     this.broadcaster = broadcaster;
-    this.watchers = new Map();
+    this.fileRepository = fileRepository;
     this.scanIntervals = new Map();
+    this.fileStates = new Map();
   }
 
   start(associations, config) {
@@ -19,109 +20,211 @@ export class WatcherService {
     this.broadcaster.broadcast("state", this.runtimeState.snapshot());
 
     for (const assoc of associations) {
-      const watcher = chokidar.watch(assoc.input, {
-        ignoreInitial: false,
-        awaitWriteFinish: false,
-        depth: 99,
-        persistent: true
-      });
-
-      watcher.on("add", (filePath) => {
-        this.copyService.enqueue(filePath, assoc, config);
-      });
-      watcher.on("change", (filePath) => {
-        this.copyService.enqueue(filePath, assoc, config);
-      });
-      watcher.on("addDir", (dirPath) => {
-        this.#ensureDestinationDirectory(assoc, dirPath);
-        this.rescanAssociation(assoc, config);
-      });
-      watcher.on("error", (error) => {
+      this.fileStates.set(assoc.id, new Map());
+      void this.scanAssociation(assoc, config).catch((error) => {
         this.runtimeState.setTaskStatus("error");
         this.runtimeState.addLog({
           time: new Date().toISOString(),
           level: "error",
-          message: error.message ?? "Watcher error"
-        });
-        this.broadcaster.broadcast("state", this.runtimeState.snapshot());
-      });
-
-      this.watchers.set(assoc.id, watcher);
-
-      void this.rescanAssociation(assoc, config).catch((error) => {
-        this.runtimeState.setTaskStatus("error");
-        this.runtimeState.addLog({
-          time: new Date().toISOString(),
-          level: "error",
-          message: error.message ?? "Rescan error"
+          message: error.message ?? "Scan error"
         });
         this.broadcaster.broadcast("state", this.runtimeState.snapshot());
       });
 
       const interval = setInterval(() => {
-        this.rescanAssociation(assoc, config);
+        this.scanAssociation(assoc, config).catch((error) => {
+          this.runtimeState.setTaskStatus("error");
+          this.runtimeState.addLog({
+            time: new Date().toISOString(),
+            level: "error",
+            message: error.message ?? "Scan error"
+          });
+          this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+        });
       }, config.scanIntervalSeconds * 1000);
       this.scanIntervals.set(assoc.id, interval);
     }
   }
 
   stop() {
-    for (const watcher of this.watchers.values()) {
-      watcher.close();
-    }
     for (const interval of this.scanIntervals.values()) {
       clearInterval(interval);
     }
-    this.watchers.clear();
     this.scanIntervals.clear();
+    this.fileStates.clear();
     this.runtimeState.setRunning(false);
     this.runtimeState.setTaskStatus("error");
   }
 
-  async rescanAssociation(association, config) {
-    const { files, dirs } = await walkEntries(association.input);
-    for (const dirPath of dirs) {
-      await this.#ensureDestinationDirectory(association, dirPath);
-    }
+  async scanAssociation(association, config) {
+    const state = this.fileStates.get(association.id) ?? new Map();
+    const now = Date.now();
+    const seen = new Set();
+    const files = await walkFiles(association.input);
+
     for (const filePath of files) {
-      this.copyService.enqueue(filePath, association, config);
+      seen.add(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      if (config.ignoredExtensions.includes(ext)) {
+        this.#setState(state, filePath, {
+          size: 0,
+          lastCheckedAt: now,
+          status: "ignored"
+        });
+        continue;
+      }
+
+      let stat;
+      try {
+        stat = await fs.promises.stat(filePath);
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          continue;
+        }
+        throw error;
+      }
+
+      const existing = state.get(filePath);
+      if (!existing) {
+        state.set(filePath, {
+          size: stat.size,
+          lastCheckedAt: now,
+          status: "pending"
+        });
+        continue;
+      }
+
+      existing.lastCheckedAt = now;
+
+      if (existing.status === "ignored") {
+        if (stat.size !== existing.size) {
+          existing.size = stat.size;
+          existing.status = "pending";
+          delete existing.fingerprint;
+          delete existing.inFlight;
+        }
+        continue;
+      }
+
+      if (existing.status === "to_copy") {
+        if (!existing.inFlight && stat.size !== existing.size) {
+          existing.size = stat.size;
+          existing.status = "pending";
+          delete existing.fingerprint;
+        }
+        continue;
+      }
+
+      if (existing.status === "pending") {
+        if (stat.size === existing.size) {
+          const fingerprintResult = await fingerprintFile(filePath);
+          const fingerprint = fingerprintResult.fingerprint;
+          const alreadyCopied = await this.fileRepository.findByFingerprint(
+            fingerprint,
+            association.input
+          );
+          if (alreadyCopied?.status === "COPIED") {
+            existing.status = "ignored";
+            existing.size = stat.size;
+            existing.fingerprint = fingerprint;
+          } else {
+            existing.status = "to_copy";
+            existing.size = stat.size;
+            existing.fingerprint = fingerprint;
+          }
+        } else {
+          existing.size = stat.size;
+        }
+      }
     }
+
+    for (const filePath of state.keys()) {
+      if (!seen.has(filePath)) {
+        state.delete(filePath);
+      }
+    }
+
+    this.fileStates.set(association.id, state);
+    this.#updateCounts(association.id, state);
+    this.#enqueueCopies(state, association, config);
   }
 
   async rescanAll(config) {
-    const associations = this.runtimeState.associations.map((assoc) => ({
-      id: assoc.id,
-      input: assoc.input,
-      output: assoc.output
-    }));
-    for (const association of associations) {
-      await this.rescanAssociation(association, config);
+    for (const association of this.runtimeState.associations) {
+      await this.scanAssociation(association, config);
     }
   }
 
-  async #ensureDestinationDirectory(association, dirPath) {
-    const relative = path.relative(association.input, dirPath);
-    if (!relative || relative === "." || relative.startsWith("..")) {
+  #updateCounts(associationId, state) {
+    let pending = 0;
+    let toCopy = 0;
+    for (const record of state.values()) {
+      if (record.status === "pending") {
+        pending += 1;
+      } else if (record.status === "to_copy") {
+        toCopy += 1;
+      }
+    }
+    this.runtimeState.setAssociationPendingCount(associationId, pending);
+    this.runtimeState.setAssociationToCopyCount(associationId, toCopy);
+    this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+  }
+
+  #enqueueCopies(state, association, config) {
+    for (const [filePath, record] of state.entries()) {
+      if (record.status !== "to_copy" || record.inFlight) {
+        continue;
+      }
+      record.inFlight = true;
+      const fingerprint = record.fingerprint;
+      const size = record.size;
+      this.copyService
+        .enqueueCopy(filePath, association, config, fingerprint, size)
+        .then((result) => {
+          record.inFlight = false;
+          if (result === "copied" || result === "skipped") {
+            record.status = "ignored";
+          }
+          this.#updateCounts(association.id, state);
+        })
+        .catch((error) => {
+          record.inFlight = false;
+          this.runtimeState.setTaskStatus("error");
+          this.runtimeState.addLog({
+            time: new Date().toISOString(),
+            level: "error",
+            message: error?.message ?? "Copy error"
+          });
+          this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+        });
+    }
+  }
+
+  #setState(state, filePath, next) {
+    const existing = state.get(filePath);
+    if (!existing) {
+      state.set(filePath, next);
       return;
     }
-    const destinationDir = path.join(association.output, relative);
-    await fs.promises.mkdir(destinationDir, { recursive: true });
+    existing.size = next.size;
+    existing.lastCheckedAt = next.lastCheckedAt;
+    existing.status = next.status;
+    delete existing.fingerprint;
+    delete existing.inFlight;
   }
 }
 
-async function walkEntries(dir) {
+async function walkFiles(dir) {
   const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  const results = { files: [], dirs: [] };
+  const files = [];
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.dirs.push(fullPath);
-      const nested = await walkEntries(fullPath);
-      results.files.push(...nested.files);
-      results.dirs.push(...nested.dirs);
+      const nested = await walkFiles(fullPath);
+      files.push(...nested);
     } else if (entry.isFile()) {
-      results.files.push(fullPath);
+      files.push(fullPath);
     }
   }
-  return results;
+  return files;
 }

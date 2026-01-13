@@ -12,8 +12,8 @@ export class RuntimeState {
       input: assoc.input,
       output: assoc.output,
       status: "idle",
-      verifyingCount: 0,
-      queuedCount: 0,
+      pendingCount: 0,
+      toCopyCount: 0,
       currentFile: null
     }));
   }
@@ -34,17 +34,17 @@ export class RuntimeState {
     }
   }
 
-  setAssociationVerifyingCount(id, count) {
+  setAssociationPendingCount(id, count) {
     const assoc = this.associations.find((item) => item.id === id);
     if (assoc) {
-      assoc.verifyingCount = count;
+      assoc.pendingCount = count;
     }
   }
 
-  setAssociationQueuedCount(id, count) {
+  setAssociationToCopyCount(id, count) {
     const assoc = this.associations.find((item) => item.id === id);
     if (assoc) {
-      assoc.queuedCount = count;
+      assoc.toCopyCount = count;
     }
   }
 

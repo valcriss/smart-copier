@@ -36,6 +36,8 @@ describe("DashboardView", () => {
         input: "/sources/project-a",
         output: "/destinations/project-b",
         status: "copying",
+        pendingCount: 0,
+        toCopyCount: 0,
         currentFile: {
           filename: "file.txt",
           percent: 50,
@@ -70,6 +72,8 @@ describe("DashboardView", () => {
         input: "/sources/project-a",
         output: "/destinations/project-b",
         status: "error",
+        pendingCount: 0,
+        toCopyCount: 0,
         currentFile: null
       },
       {
@@ -77,6 +81,8 @@ describe("DashboardView", () => {
         input: "/sources/project-a",
         output: "/destinations/project-b",
         status: "idle",
+        pendingCount: 0,
+        toCopyCount: 0,
         currentFile: null
       }
     ];
@@ -87,7 +93,7 @@ describe("DashboardView", () => {
     await deleteButton.trigger("click");
   });
 
-  it("shows pending status label", () => {
+  it("shows pending and to-copy badges", () => {
     resetState();
     state.associations = [
       {
@@ -95,12 +101,29 @@ describe("DashboardView", () => {
         input: "/sources/project-a",
         output: "/destinations/project-b",
         status: "idle",
-        verifyingCount: 2,
-        queuedCount: 4,
+        pendingCount: 2,
+        toCopyCount: 4,
         currentFile: null
       }
     ];
     const wrapper = mount(DashboardView);
-    expect(wrapper.text()).toContain("2 fichiers en verification, 4 fichiers a copier");
+    expect(wrapper.text()).toContain("2 fichiers en attente");
+    expect(wrapper.text()).toContain("4 fichiers a copier");
+  });
+
+  it("defaults missing counts to zero", () => {
+    resetState();
+    state.associations = [
+      {
+        id: "z",
+        input: "/sources/project-a",
+        output: "/destinations/project-b",
+        status: "idle",
+        currentFile: null
+      }
+    ];
+    const wrapper = mount(DashboardView);
+    expect(wrapper.text()).toContain("0 fichiers en attente");
+    expect(wrapper.text()).toContain("0 fichiers a copier");
   });
 });
