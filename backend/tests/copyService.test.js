@@ -6,7 +6,7 @@ import { CopyService } from "../src/services/copyService.js";
 import { RuntimeState } from "../src/services/runtimeState.js";
 import { fingerprintFile } from "../src/util/fingerprint.js";
 import * as fingerprintModule from "../src/util/fingerprint.js";
-import * as stabilityModule from "../src/util/fileStability.js";
+import { EventEmitter } from "events";
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "smart-copier-"));
@@ -67,13 +67,45 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue("/in/file.tmp", { id: "a", input: "/in", output: "/out" }, {
+    await copyService.enqueue("/in/file.tmp", { id: "a", input: "/in", output: "/out" }, {
       ignoredExtensions: [".tmp"],
       dryRun: false
     });
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(runtimeState.associations[0].status).toBe("idle");
+  });
+
+  it("skips ignored extensions in handler", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.tmp");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.queue.push({
+      filePath,
+      association: { id: "a", input: sourceRoot, output: destRoot },
+      config: { ignoredExtensions: [".tmp"], dryRun: false }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    expect(fs.existsSync(path.join(destRoot, "file.tmp"))).toBe(false);
   });
 
   it("skips already copied files", async () => {
@@ -100,7 +132,7 @@ describe("CopyService", () => {
       source_root: sourceRoot
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -127,7 +159,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: true
     });
@@ -154,7 +186,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -186,7 +218,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -217,7 +249,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -228,11 +260,19 @@ describe("CopyService", () => {
   });
 
   it("marks errors", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
     const repo = new MemoryFileRepository();
     const runtimeState = new RuntimeState();
-    runtimeState.setAssociations([{ id: "a", input: "/in", output: "/out" }]);
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
 
-    const stableSpy = vi.spyOn(stabilityModule, "isFileStable").mockRejectedValue(new Error("boom"));
+    const fingerprintSpy = vi
+      .spyOn(fingerprintModule, "fingerprintFile")
+      .mockRejectedValue(new Error("boom"));
 
     const copyService = new CopyService({
       fileRepository: repo,
@@ -241,14 +281,15 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue("/in/missing.txt", { id: "a", input: "/in", output: "/out" }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushAsync();
+    await waitForCondition(() => runtimeState.associations[0].status === "error");
     expect(runtimeState.associations[0].status).toBe("error");
-    stableSpy.mockRestore();
+    fingerprintSpy.mockRestore();
   });
 
   it("marks failed copy", async () => {
@@ -271,21 +312,26 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCondition(() => Array.from(repo.files.values())[0]?.status === "FAILED");
     const stored = Array.from(repo.files.values())[0];
-    expect(stored.status).toBe("FAILED");
+    expect(stored?.status).toBe("FAILED");
     renameSpy.mockRestore();
   });
 
   it("skips processing when busy", async () => {
     const repo = new MemoryFileRepository();
     const runtimeState = new RuntimeState();
-    runtimeState.setAssociations([{ id: "a", input: "/in", output: "/out" }]);
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
 
     const copyService = new CopyService({
       fileRepository: repo,
@@ -295,18 +341,24 @@ describe("CopyService", () => {
     });
 
     copyService.processing = true;
-    copyService.enqueue("/in/file.txt", { id: "a", input: "/in", output: "/out" }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
+    await flushAsync();
     expect(copyService.queue.length).toBe(1);
   });
 
   it("handles empty queue shift", async () => {
     const repo = new MemoryFileRepository();
     const runtimeState = new RuntimeState();
-    runtimeState.setAssociations([{ id: "a", input: "/in", output: "/out" }]);
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
 
     const copyService = new CopyService({
       fileRepository: repo,
@@ -316,12 +368,12 @@ describe("CopyService", () => {
     });
 
     copyService.queue.shift = () => undefined;
-    copyService.enqueue("/in/file.txt", { id: "a", input: "/in", output: "/out" }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushAsync();
     expect(copyService.processing).toBe(false);
   });
 
@@ -345,14 +397,15 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath1, { id: "a", input: sourceRoot, output: destRoot }, {
+    const first = copyService.enqueue(filePath1, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
-    copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
+    const second = copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
+    await Promise.all([first, second]);
 
     await waitForFile(path.join(destRoot, "file1.txt"));
     await waitForFile(path.join(destRoot, "file2.txt"));
@@ -378,7 +431,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -410,12 +463,12 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCondition(() => runtimeState.logs.length === 1);
     expect(runtimeState.logs.length).toBe(1);
     expect(runtimeState.logs[0].message).toBe("Unknown error");
   });
@@ -435,14 +488,13 @@ describe("CopyService", () => {
       fingerprint: "fp-zero",
       size: 0
     });
-    const stableSpy = vi.spyOn(stabilityModule, "isFileStable").mockResolvedValue(true);
 
-    const reader = new (await import("events")).EventEmitter();
+    const reader = new EventEmitter();
     reader.pipe = (writer) => {
       reader.emit("data", Buffer.alloc(0));
       writer.emit("close");
     };
-    const writer = new (await import("events")).EventEmitter();
+    const writer = new EventEmitter();
 
     const readSpy = vi.spyOn(fs, "createReadStream").mockReturnValue(reader);
     const writeSpy = vi.spyOn(fs, "createWriteStream").mockReturnValue(writer);
@@ -463,7 +515,7 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
@@ -473,12 +525,11 @@ describe("CopyService", () => {
     expect(progressCapture.percent).toBe(100);
 
     fingerprintSpy.mockRestore();
-    stableSpy.mockRestore();
     readSpy.mockRestore();
     writeSpy.mockRestore();
   });
 
-  it("skips unstable files", async () => {
+  it("waits for stability window", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
     const destRoot = path.join(root, "dst");
@@ -491,22 +542,193 @@ describe("CopyService", () => {
 
     const copyService = new CopyService({
       fileRepository: repo,
-      envConfig: { getStabilityWindowSeconds: () => 1 },
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
       runtimeState,
       broadcaster: { broadcast: () => {} }
     });
 
-    setTimeout(() => {
-      fs.appendFileSync(filePath, "more");
-    }, 200);
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
 
-    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
+
+    fs.appendFileSync(filePath, "more");
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
+  });
+
+  it("tracks pending files per association", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await flushAsync();
+    expect(runtimeState.associations[0].pendingCount).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
+  });
+
+  it("keeps pending during stability window", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+    expect(runtimeState.associations[0].pendingCount).toBe(1);
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
+  });
+
+  it("resets stability timer on change", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fs.appendFileSync(filePath, "more");
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
+  });
+
+  it("clears stability on ignored extension", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+    expect(runtimeState.associations[0].pendingCount).toBe(1);
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [".txt"],
+      dryRun: false
+    });
+    await flushAsync();
+
+    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
+  });
+
+  it("propagates unexpected stat errors", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const statSpy = vi.spyOn(fs.promises, "stat").mockRejectedValueOnce(new Error("boom"));
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await expect(
+      copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+        ignoredExtensions: [],
+        dryRun: false
+      })
+    ).rejects.toThrow("boom");
+    statSpy.mockRestore();
   });
 
   it("ignores missing source files", async () => {
@@ -521,12 +743,12 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    copyService.enqueue("/in/missing.txt", { id: "a", input: "/in", output: "/out" }, {
+    await copyService.enqueue("/in/missing.txt", { id: "a", input: "/in", output: "/out" }, {
       ignoredExtensions: [],
       dryRun: false
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushAsync();
     expect(runtimeState.associations[0].status).toBe("idle");
     expect(runtimeState.logs.length).toBe(0);
   });
@@ -536,6 +758,20 @@ async function waitForFile(filePath, timeoutMs = 1000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(filePath)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function flushAsync() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function waitForCondition(predicate, timeoutMs = 1000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));

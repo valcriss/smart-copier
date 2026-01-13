@@ -30,9 +30,9 @@
           </div>
           <span
             class="rounded-full px-3 py-1 text-xs font-semibold"
-            :class="statusClasses(assoc.status)"
+            :class="statusClasses(assoc)"
           >
-            {{ assoc.status }}
+            {{ statusLabel(assoc) }}
           </span>
         </div>
 
@@ -91,14 +91,30 @@ const editing = ref(null);
 
 const hasActiveCopy = computed(() => state.associations.some((assoc) => assoc.status === "copying"));
 
-function statusClasses(status) {
-  if (status === "copying") {
+function statusClasses(assoc) {
+  if (assoc.status === "copying") {
     return "bg-cyan-500/20 text-cyan-200";
   }
-  if (status === "error") {
+  if (assoc.status === "error") {
     return "bg-rose-500/20 text-rose-200";
   }
+  if (assoc.pendingCount > 0) {
+    return "bg-amber-500/20 text-amber-200";
+  }
   return "bg-slate-800 text-slate-300";
+}
+
+function statusLabel(assoc) {
+  if (assoc.status === "copying") {
+    return "copying";
+  }
+  if (assoc.status === "error") {
+    return "error";
+  }
+  if (assoc.pendingCount > 0) {
+    return `${assoc.pendingCount} fichiers en attente`;
+  }
+  return "idle";
 }
 
 function openCreate() {

@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import { fingerprintFile } from "../util/fingerprint.js";
-import { isFileStable } from "../util/fileStability.js";
 
 export class CopyService {
   constructor({ fileRepository, envConfig, runtimeState, broadcaster }) {
@@ -11,11 +10,12 @@ export class CopyService {
     this.broadcaster = broadcaster;
     this.queue = [];
     this.processing = false;
+    this.pendingByAssociation = new Map();
+    this.stability = new Map();
   }
 
-  enqueue(filePath, association, config) {
-    this.queue.push({ filePath, association, config });
-    this.#processQueue();
+  async enqueue(filePath, association, config) {
+    return this.#observeFile(filePath, association, config);
   }
 
   async #processQueue() {
@@ -42,14 +42,6 @@ export class CopyService {
     try {
       const ext = path.extname(filePath).toLowerCase();
       if (config.ignoredExtensions.includes(ext)) {
-        return;
-      }
-
-      const stable = await isFileStable(
-        filePath,
-        this.envConfig.getStabilityWindowSeconds()
-      );
-      if (!stable) {
         return;
       }
 
@@ -137,6 +129,109 @@ export class CopyService {
       });
       this.broadcaster.broadcast("state", this.runtimeState.snapshot());
     }
+  }
+
+  async #observeFile(filePath, association, config) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (config.ignoredExtensions.includes(ext)) {
+      this.#clearPending(association.id, filePath);
+      this.#clearStability(filePath);
+      return;
+    }
+
+    let stat;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      this.#clearPending(association.id, filePath);
+      this.#clearStability(filePath);
+      return;
+    }
+
+    const windowMs = this.envConfig.getStabilityWindowSeconds() * 1000;
+    if (windowMs === 0) {
+      this.#clearPending(association.id, filePath);
+      this.#clearStability(filePath);
+      this.queue.push({ filePath, association, config });
+      await this.#processQueue();
+      return;
+    }
+    const now = Date.now();
+    const existing = this.stability.get(filePath);
+    const changed =
+      !existing || existing.lastSize !== stat.size || existing.lastMtime !== stat.mtimeMs;
+
+    if (changed) {
+      if (existing?.timer) {
+        clearTimeout(existing.timer);
+      }
+      const stableAt = now + windowMs;
+      const timer = setTimeout(() => {
+        this.enqueue(filePath, association, config);
+      }, windowMs);
+      this.stability.set(filePath, {
+        lastSize: stat.size,
+        lastMtime: stat.mtimeMs,
+        stableAt,
+        timer
+      });
+      this.#markPending(association.id, filePath);
+      return;
+    }
+
+    if (now < existing.stableAt) {
+      this.#markPending(association.id, filePath);
+      return;
+    }
+
+    if (existing?.timer) {
+      clearTimeout(existing.timer);
+    }
+    this.stability.delete(filePath);
+    this.#clearPending(association.id, filePath);
+    this.queue.push({ filePath, association, config });
+    await this.#processQueue();
+  }
+
+  #markPending(associationId, filePath) {
+    let pending = this.pendingByAssociation.get(associationId);
+    if (!pending) {
+      pending = new Set();
+      this.pendingByAssociation.set(associationId, pending);
+    }
+    const before = pending.size;
+    pending.add(filePath);
+    if (pending.size !== before) {
+      this.runtimeState.setAssociationPendingCount(associationId, pending.size);
+      this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+    }
+  }
+
+  #clearPending(associationId, filePath) {
+    const pending = this.pendingByAssociation.get(associationId);
+    if (!pending) {
+      return;
+    }
+    const before = pending.size;
+    pending.delete(filePath);
+    if (pending.size === 0) {
+      this.pendingByAssociation.delete(associationId);
+    }
+    if (pending.size !== before) {
+      this.runtimeState.setAssociationPendingCount(associationId, pending.size);
+      this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+    }
+  }
+
+  #clearStability(filePath) {
+    const existing = this.stability.get(filePath);
+    if (existing?.timer) {
+      clearTimeout(existing.timer);
+    }
+    this.stability.delete(filePath);
   }
 
   async #copyFile(

@@ -86,4 +86,20 @@ describe("DashboardView", () => {
     const deleteButton = wrapper.findAll("button").find((btn) => btn.text() === "Supprimer");
     await deleteButton.trigger("click");
   });
+
+  it("shows pending status label", () => {
+    resetState();
+    state.associations = [
+      {
+        id: "p",
+        input: "/sources/project-a",
+        output: "/destinations/project-b",
+        status: "idle",
+        pendingCount: 3,
+        currentFile: null
+      }
+    ];
+    const wrapper = mount(DashboardView);
+    expect(wrapper.text()).toContain("3 fichiers en attente");
+  });
 });

@@ -11,12 +11,14 @@ describe("RuntimeState", () => {
     state.setRunning(true);
     state.setTaskStatus("error");
     state.setAssociationStatus("a", "copying", { filename: "file.txt" });
+    state.setAssociationPendingCount("a", 2);
     state.addLog({ level: "info", message: "ok" });
 
     const snapshot = state.snapshot();
     expect(snapshot.running).toBe(true);
     expect(snapshot.taskStatus).toBe("error");
     expect(snapshot.associations[0].status).toBe("copying");
+    expect(snapshot.associations[0].pendingCount).toBe(2);
     expect(snapshot.logs.length).toBe(1);
   });
 
@@ -32,7 +34,9 @@ describe("RuntimeState", () => {
     const state = new RuntimeState();
     state.setAssociations([{ id: "a", input: "/sources/a", output: "/destinations/b" }]);
     state.setAssociationStatus("missing", "copying", { filename: "x" });
+    state.setAssociationPendingCount("missing", 3);
     expect(state.associations[0].status).toBe("idle");
+    expect(state.associations[0].pendingCount).toBe(0);
   });
 });
 

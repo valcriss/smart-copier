@@ -12,6 +12,7 @@ export class RuntimeState {
       input: assoc.input,
       output: assoc.output,
       status: "idle",
+      pendingCount: 0,
       currentFile: null
     }));
   }
@@ -29,6 +30,13 @@ export class RuntimeState {
     if (assoc) {
       assoc.status = status;
       assoc.currentFile = currentFile ?? null;
+    }
+  }
+
+  setAssociationPendingCount(id, count) {
+    const assoc = this.associations.find((item) => item.id === id);
+    if (assoc) {
+      assoc.pendingCount = count;
     }
   }
 
