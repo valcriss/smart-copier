@@ -95,11 +95,12 @@ describe("DashboardView", () => {
         input: "/sources/project-a",
         output: "/destinations/project-b",
         status: "idle",
-        pendingCount: 3,
+        verifyingCount: 2,
+        queuedCount: 4,
         currentFile: null
       }
     ];
     const wrapper = mount(DashboardView);
-    expect(wrapper.text()).toContain("3 fichiers en attente");
+    expect(wrapper.text()).toContain("2 fichiers en verification, 4 fichiers a copier");
   });
 });

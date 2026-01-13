@@ -76,6 +76,39 @@ describe("CopyService", () => {
     expect(runtimeState.associations[0].status).toBe("idle");
   });
 
+  it("ignores ENOENT during enqueue", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const fingerprintSpy = vi
+      .spyOn(fingerprintModule, "fingerprintFile")
+      .mockRejectedValue({ code: "ENOENT" });
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+
+    expect(runtimeState.associations[0].status).toBe("idle");
+    expect(runtimeState.logs.length).toBe(0);
+    fingerprintSpy.mockRestore();
+  });
+
   it("skips ignored extensions in handler", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
@@ -106,6 +139,82 @@ describe("CopyService", () => {
     });
 
     expect(fs.existsSync(path.join(destRoot, "file.tmp"))).toBe(false);
+  });
+
+  it("computes fingerprint in handler when missing", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath1 = path.join(sourceRoot, "file1.txt");
+    const filePath2 = path.join(sourceRoot, "file2.txt");
+    createFile(filePath1, "content-1");
+    createFile(filePath2, "content-2");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.queue.push({
+      filePath: filePath1,
+      association: { id: "a", input: sourceRoot, output: destRoot },
+      config: { ignoredExtensions: [], dryRun: false }
+    });
+
+    await copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: true
+    });
+
+    await waitForFile(path.join(destRoot, "file1.txt"));
+    expect(fs.existsSync(path.join(destRoot, "file1.txt"))).toBe(true);
+  });
+
+  it("skips already copied in handler", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath1 = path.join(sourceRoot, "file1.txt");
+    const filePath2 = path.join(sourceRoot, "file2.txt");
+    createFile(filePath1, "content-1");
+    createFile(filePath2, "content-2");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const fingerprint = await fingerprintFile(filePath1);
+    repo.files.set(`${fingerprint.fingerprint}:${sourceRoot}`, {
+      status: "COPIED",
+      source_root: sourceRoot
+    });
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.queue.push({
+      filePath: filePath1,
+      association: { id: "a", input: sourceRoot, output: destRoot },
+      config: { ignoredExtensions: [], dryRun: false }
+    });
+
+    await copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: true
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fs.existsSync(path.join(destRoot, "file1.txt"))).toBe(false);
   });
 
   it("skips already copied files", async () => {
@@ -321,6 +430,94 @@ describe("CopyService", () => {
     const stored = Array.from(repo.files.values())[0];
     expect(stored?.status).toBe("FAILED");
     renameSpy.mockRestore();
+  });
+
+  it("logs handler errors", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath1 = path.join(sourceRoot, "file1.txt");
+    const filePath2 = path.join(sourceRoot, "file2.txt");
+    createFile(filePath1, "content-1");
+    createFile(filePath2, "content-2");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const targetFingerprint = await fingerprintFile(filePath1);
+    repo.findByFingerprint = async (fingerprint) => {
+      if (fingerprint === targetFingerprint.fingerprint) {
+        throw new Error("boom");
+      }
+      return null;
+    };
+    repo.markFailed = async () => {};
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.queue.push({
+      filePath: filePath1,
+      association: { id: "a", input: sourceRoot, output: destRoot },
+      config: { ignoredExtensions: [], dryRun: false }
+    });
+
+    await copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: true
+    });
+
+    await waitForCondition(() => runtimeState.logs.length === 1);
+    expect(runtimeState.logs[0].message).toBe("boom");
+  });
+
+  it("logs non-error handler errors", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath1 = path.join(sourceRoot, "file1.txt");
+    const filePath2 = path.join(sourceRoot, "file2.txt");
+    createFile(filePath1, "content-1");
+    createFile(filePath2, "content-2");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const targetFingerprint = await fingerprintFile(filePath1);
+    repo.findByFingerprint = async (fingerprint) => {
+      if (fingerprint === targetFingerprint.fingerprint) {
+        throw "boom";
+      }
+      return null;
+    };
+    repo.markFailed = async () => {};
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.queue.push({
+      filePath: filePath1,
+      association: { id: "a", input: sourceRoot, output: destRoot },
+      config: { ignoredExtensions: [], dryRun: false }
+    });
+
+    await copyService.enqueue(filePath2, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: true
+    });
+
+    await waitForCondition(() => runtimeState.logs.length === 1);
+    expect(runtimeState.logs[0].message).toBe("Unknown error");
   });
 
   it("skips processing when busy", async () => {
@@ -567,7 +764,7 @@ describe("CopyService", () => {
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
   });
 
-  it("tracks pending files per association", async () => {
+  it("tracks verifying files per association", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
     const destRoot = path.join(root, "dst");
@@ -591,13 +788,13 @@ describe("CopyService", () => {
     });
 
     await flushAsync();
-    expect(runtimeState.associations[0].pendingCount).toBe(1);
+    expect(runtimeState.associations[0].verifyingCount).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    expect(runtimeState.associations[0].verifyingCount).toBe(0);
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
   });
 
-  it("keeps pending during stability window", async () => {
+  it("keeps verifying during stability window", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
     const destRoot = path.join(root, "dst");
@@ -627,7 +824,7 @@ describe("CopyService", () => {
       dryRun: false
     });
     await flushAsync();
-    expect(runtimeState.associations[0].pendingCount).toBe(1);
+    expect(runtimeState.associations[0].verifyingCount).toBe(1);
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
   });
 
@@ -667,6 +864,116 @@ describe("CopyService", () => {
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
   });
 
+  it("reschedules stability when timer missing", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+
+    const entry = copyService.stability.get(filePath);
+    entry.timer = null;
+    entry.stableAt = Date.now() + 40;
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+
+    expect(copyService.stability.get(filePath)?.timer).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
+  });
+
+  it("clears stability timer on fire", async () => {
+    vi.useFakeTimers();
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+    const entry = copyService.stability.get(filePath);
+    if (entry) {
+      expect(entry.timer).toBe(null);
+    }
+    vi.useRealTimers();
+  });
+
+  it("clears existing timer when stable", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0.05 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    let fired = false;
+    const timer = setTimeout(() => {
+      fired = true;
+    }, 50);
+    const stat = fs.statSync(filePath);
+    copyService.stability.set(filePath, {
+      lastSize: stat.size,
+      lastMtime: stat.mtimeMs,
+      stableAt: Date.now() - 1,
+      timer
+    });
+
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(fired).toBe(false);
+  });
+
   it("clears stability on ignored extension", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
@@ -690,7 +997,7 @@ describe("CopyService", () => {
       dryRun: false
     });
     await flushAsync();
-    expect(runtimeState.associations[0].pendingCount).toBe(1);
+    expect(runtimeState.associations[0].verifyingCount).toBe(1);
 
     await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
       ignoredExtensions: [".txt"],
@@ -698,11 +1005,11 @@ describe("CopyService", () => {
     });
     await flushAsync();
 
-    expect(runtimeState.associations[0].pendingCount).toBe(0);
+    expect(runtimeState.associations[0].verifyingCount).toBe(0);
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
   });
 
-  it("propagates unexpected stat errors", async () => {
+  it("logs unexpected stat errors", async () => {
     const root = createTempDir();
     const sourceRoot = path.join(root, "src");
     const destRoot = path.join(root, "dst");
@@ -722,12 +1029,13 @@ describe("CopyService", () => {
       broadcaster: { broadcast: () => {} }
     });
 
-    await expect(
-      copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
-        ignoredExtensions: [],
-        dryRun: false
-      })
-    ).rejects.toThrow("boom");
+    await copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+    await flushAsync();
+    expect(runtimeState.associations[0].status).toBe("error");
+    expect(runtimeState.logs[0].message).toBe("boom");
     statSpy.mockRestore();
   });
 

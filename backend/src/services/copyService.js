@@ -10,12 +10,27 @@ export class CopyService {
     this.broadcaster = broadcaster;
     this.queue = [];
     this.processing = false;
-    this.pendingByAssociation = new Map();
+    this.verifyingByAssociation = new Map();
+    this.queuedByAssociation = new Map();
     this.stability = new Map();
   }
 
   async enqueue(filePath, association, config) {
-    return this.#observeFile(filePath, association, config);
+    try {
+      return await this.#observeFile(filePath, association, config);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Unknown error";
+      this.runtimeState.setAssociationStatus(association.id, "error", null);
+      this.runtimeState.addLog({
+        time: new Date().toISOString(),
+        level: "error",
+        message
+      });
+      this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+    }
   }
 
   async #processQueue() {
@@ -27,8 +42,9 @@ export class CopyService {
       return;
     }
     this.processing = true;
+    this.#clearQueued(next.association.id, next.filePath);
     try {
-      await this.#handleFile(next.filePath, next.association, next.config);
+      await this.#handleFile(next);
     } finally {
       this.processing = false;
       if (this.queue.length > 0) {
@@ -37,19 +53,22 @@ export class CopyService {
     }
   }
 
-  async #handleFile(filePath, association, config) {
-    let fingerprint = null;
+  async #handleFile({ filePath, association, config, fingerprint, size }) {
+    let resolvedFingerprint = fingerprint ?? null;
+    let resolvedSize = size;
     try {
       const ext = path.extname(filePath).toLowerCase();
       if (config.ignoredExtensions.includes(ext)) {
         return;
       }
 
-      const fingerprintResult = await fingerprintFile(filePath);
-      fingerprint = fingerprintResult.fingerprint;
-      const size = fingerprintResult.size;
+      if (!resolvedFingerprint || resolvedSize === undefined) {
+        const fingerprintResult = await fingerprintFile(filePath);
+        resolvedFingerprint = fingerprintResult.fingerprint;
+        resolvedSize = fingerprintResult.size;
+      }
       const sourceRoot = association.input;
-      const existing = await this.fileRepository.findByFingerprint(fingerprint, sourceRoot);
+      const existing = await this.fileRepository.findByFingerprint(resolvedFingerprint, sourceRoot);
       if (existing?.status === "COPIED") {
         return;
       }
@@ -61,23 +80,23 @@ export class CopyService {
 
       if (!existing) {
         await this.fileRepository.insertPending({
-          fingerprint,
+          fingerprint: resolvedFingerprint,
           filename,
           sourcePath: filePath,
           sourceRoot,
           destinationPath,
-          size,
+          size: resolvedSize,
           status: "PENDING",
           firstSeenAt
         });
       }
 
-      await this.fileRepository.markCopying(fingerprint, sourceRoot);
+      await this.fileRepository.markCopying(resolvedFingerprint, sourceRoot);
       this.runtimeState.setAssociationStatus(association.id, "copying", {
         filename,
         sourcePath: filePath,
         destinationPath,
-        size,
+        size: resolvedSize,
         copiedBytes: 0,
         percent: 0,
         speedBytesPerSecond: 0,
@@ -87,7 +106,7 @@ export class CopyService {
 
       if (config.dryRun) {
         await this.fileRepository.markCopied(
-          fingerprint,
+          resolvedFingerprint,
           sourceRoot,
           destinationPath,
           new Date().toISOString()
@@ -103,10 +122,10 @@ export class CopyService {
         association.output,
         relative,
         association.id,
-        size
+        resolvedSize
       );
       await this.fileRepository.markCopied(
-        fingerprint,
+        resolvedFingerprint,
         sourceRoot,
         destinationPath,
         new Date().toISOString()
@@ -118,8 +137,8 @@ export class CopyService {
         return;
       }
       const message = error instanceof Error ? error.message : "Unknown error";
-      if (fingerprint) {
-        await this.fileRepository.markFailed(fingerprint, association.input, message);
+      if (resolvedFingerprint) {
+        await this.fileRepository.markFailed(resolvedFingerprint, association.input, message);
       }
       this.runtimeState.setAssociationStatus(association.id, "error", null);
       this.runtimeState.addLog({
@@ -134,7 +153,8 @@ export class CopyService {
   async #observeFile(filePath, association, config) {
     const ext = path.extname(filePath).toLowerCase();
     if (config.ignoredExtensions.includes(ext)) {
-      this.#clearPending(association.id, filePath);
+      this.#clearVerifying(association.id, filePath);
+      this.#clearQueued(association.id, filePath);
       this.#clearStability(filePath);
       return;
     }
@@ -146,17 +166,17 @@ export class CopyService {
       if (error?.code !== "ENOENT") {
         throw error;
       }
-      this.#clearPending(association.id, filePath);
+      this.#clearVerifying(association.id, filePath);
+      this.#clearQueued(association.id, filePath);
       this.#clearStability(filePath);
       return;
     }
 
     const windowMs = this.envConfig.getStabilityWindowSeconds() * 1000;
     if (windowMs === 0) {
-      this.#clearPending(association.id, filePath);
+      this.#clearVerifying(association.id, filePath);
       this.#clearStability(filePath);
-      this.queue.push({ filePath, association, config });
-      await this.#processQueue();
+      await this.#enqueueCandidate(filePath, association, config);
       return;
     }
     const now = Date.now();
@@ -169,21 +189,28 @@ export class CopyService {
         clearTimeout(existing.timer);
       }
       const stableAt = now + windowMs;
-      const timer = setTimeout(() => {
-        this.enqueue(filePath, association, config);
-      }, windowMs);
+      const timer = this.#scheduleStabilityCheck(filePath, association, config, windowMs);
       this.stability.set(filePath, {
         lastSize: stat.size,
         lastMtime: stat.mtimeMs,
         stableAt,
         timer
       });
-      this.#markPending(association.id, filePath);
+      this.#markVerifying(association.id, filePath);
       return;
     }
 
     if (now < existing.stableAt) {
-      this.#markPending(association.id, filePath);
+      if (!existing.timer) {
+        const remaining = Math.max(existing.stableAt - now, 0);
+        existing.timer = this.#scheduleStabilityCheck(
+          filePath,
+          association,
+          config,
+          remaining
+        );
+      }
+      this.#markVerifying(association.id, filePath);
       return;
     }
 
@@ -191,37 +218,102 @@ export class CopyService {
       clearTimeout(existing.timer);
     }
     this.stability.delete(filePath);
-    this.#clearPending(association.id, filePath);
-    this.queue.push({ filePath, association, config });
-    await this.#processQueue();
+    this.#clearVerifying(association.id, filePath);
+    await this.#enqueueCandidate(filePath, association, config);
   }
 
-  #markPending(associationId, filePath) {
-    let pending = this.pendingByAssociation.get(associationId);
-    if (!pending) {
-      pending = new Set();
-      this.pendingByAssociation.set(associationId, pending);
+  #scheduleStabilityCheck(filePath, association, config, delayMs) {
+    return setTimeout(() => {
+      const entry = this.stability.get(filePath);
+      if (entry) {
+        entry.timer = null;
+      }
+      this.enqueue(filePath, association, config);
+    }, delayMs);
+  }
+
+  async #enqueueCandidate(filePath, association, config) {
+    const { fingerprint, size } = await this.#prepareCandidate(filePath, association);
+    if (!fingerprint) {
+      return;
     }
-    const before = pending.size;
-    pending.add(filePath);
-    if (pending.size !== before) {
-      this.runtimeState.setAssociationPendingCount(associationId, pending.size);
+    if (this.#markQueued(association.id, filePath)) {
+      this.queue.push({ filePath, association, config, fingerprint, size });
+      await this.#processQueue();
+    }
+  }
+
+  async #prepareCandidate(filePath, association) {
+    const fingerprintResult = await fingerprintFile(filePath);
+    const fingerprint = fingerprintResult.fingerprint;
+    const size = fingerprintResult.size;
+    const existing = await this.fileRepository.findByFingerprint(
+      fingerprint,
+      association.input
+    );
+    if (existing?.status === "COPIED") {
+      return { fingerprint: null, size: null };
+    }
+    return { fingerprint, size };
+  }
+
+  #markVerifying(associationId, filePath) {
+    let verifying = this.verifyingByAssociation.get(associationId);
+    if (!verifying) {
+      verifying = new Set();
+      this.verifyingByAssociation.set(associationId, verifying);
+    }
+    const before = verifying.size;
+    verifying.add(filePath);
+    if (verifying.size !== before) {
+      this.runtimeState.setAssociationVerifyingCount(associationId, verifying.size);
       this.broadcaster.broadcast("state", this.runtimeState.snapshot());
     }
   }
 
-  #clearPending(associationId, filePath) {
-    const pending = this.pendingByAssociation.get(associationId);
-    if (!pending) {
+  #clearVerifying(associationId, filePath) {
+    const verifying = this.verifyingByAssociation.get(associationId);
+    if (!verifying) {
       return;
     }
-    const before = pending.size;
-    pending.delete(filePath);
-    if (pending.size === 0) {
-      this.pendingByAssociation.delete(associationId);
+    const before = verifying.size;
+    verifying.delete(filePath);
+    if (verifying.size === 0) {
+      this.verifyingByAssociation.delete(associationId);
     }
-    if (pending.size !== before) {
-      this.runtimeState.setAssociationPendingCount(associationId, pending.size);
+    if (verifying.size !== before) {
+      this.runtimeState.setAssociationVerifyingCount(associationId, verifying.size);
+      this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+    }
+  }
+
+  #markQueued(associationId, filePath) {
+    let queued = this.queuedByAssociation.get(associationId);
+    if (!queued) {
+      queued = new Set();
+      this.queuedByAssociation.set(associationId, queued);
+    }
+    const before = queued.size;
+    queued.add(filePath);
+    if (queued.size !== before) {
+      this.runtimeState.setAssociationQueuedCount(associationId, queued.size);
+      this.broadcaster.broadcast("state", this.runtimeState.snapshot());
+    }
+    return queued.size !== before;
+  }
+
+  #clearQueued(associationId, filePath) {
+    const queued = this.queuedByAssociation.get(associationId);
+    if (!queued) {
+      return;
+    }
+    const before = queued.size;
+    queued.delete(filePath);
+    if (queued.size === 0) {
+      this.queuedByAssociation.delete(associationId);
+    }
+    if (queued.size !== before) {
+      this.runtimeState.setAssociationQueuedCount(associationId, queued.size);
       this.broadcaster.broadcast("state", this.runtimeState.snapshot());
     }
   }

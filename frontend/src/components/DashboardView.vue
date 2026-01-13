@@ -98,7 +98,7 @@ function statusClasses(assoc) {
   if (assoc.status === "error") {
     return "bg-rose-500/20 text-rose-200";
   }
-  if (assoc.pendingCount > 0) {
+  if (assoc.verifyingCount > 0 || assoc.queuedCount > 0) {
     return "bg-amber-500/20 text-amber-200";
   }
   return "bg-slate-800 text-slate-300";
@@ -111,8 +111,8 @@ function statusLabel(assoc) {
   if (assoc.status === "error") {
     return "error";
   }
-  if (assoc.pendingCount > 0) {
-    return `${assoc.pendingCount} fichiers en attente`;
+  if (assoc.verifyingCount > 0 || assoc.queuedCount > 0) {
+    return `${assoc.verifyingCount} fichiers en verification, ${assoc.queuedCount} fichiers a copier`;
   }
   return "idle";
 }

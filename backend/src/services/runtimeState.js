@@ -12,7 +12,8 @@ export class RuntimeState {
       input: assoc.input,
       output: assoc.output,
       status: "idle",
-      pendingCount: 0,
+      verifyingCount: 0,
+      queuedCount: 0,
       currentFile: null
     }));
   }
@@ -33,10 +34,17 @@ export class RuntimeState {
     }
   }
 
-  setAssociationPendingCount(id, count) {
+  setAssociationVerifyingCount(id, count) {
     const assoc = this.associations.find((item) => item.id === id);
     if (assoc) {
-      assoc.pendingCount = count;
+      assoc.verifyingCount = count;
+    }
+  }
+
+  setAssociationQueuedCount(id, count) {
+    const assoc = this.associations.find((item) => item.id === id);
+    if (assoc) {
+      assoc.queuedCount = count;
     }
   }
 
