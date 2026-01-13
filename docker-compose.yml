@@ -1,6 +1,6 @@
 services:
   smart-copier:
-    build: https://github.com/valcriss/smart-copier.git
+    image: ghcr.io/valcriss/smart-copier:latest
     ports:
       - "3000:3000"
     environment:
