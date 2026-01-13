@@ -1,0 +1,22 @@
+services:
+  smart-copier:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - FILE_STABILITY_WINDOW_SECONDS=10
+      - SCAN_INTERVAL_SECONDS=60
+      - DRY_RUN=false
+      - ALLOWED_SOURCE_ROOTS=/sources
+      - ALLOWED_DEST_ROOTS=/destinations
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+      - type: bind
+        source: ./sources
+        target: /sources
+        read_only: true
+      - type: bind
+        source: ./destinations
+        target: /destinations

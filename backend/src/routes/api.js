@@ -1,0 +1,107 @@
+import express from "express";
+import fs from "fs";
+import path from "path";
+
+export function buildApiRouter({
+  associationService,
+  watcherService,
+  runtimeState,
+  fileRepository,
+  envConfig,
+  broadcaster
+}) {
+  const router = express.Router();
+
+  router.get("/config", async (req, res) => {
+    const config = await associationService.getEffectiveConfig();
+    const allowedRoots = await resolveAllowedRoots(envConfig);
+    res.json({
+      config,
+      allowedRoots
+    });
+  });
+
+  router.put("/config", async (req, res) => {
+    try {
+      const stored = await associationService.updateConfig(req.body ?? {});
+      const effective = envConfig.resolveConfig(stored);
+      runtimeState.setAssociations(effective.associations);
+      watcherService.start(effective.associations, effective);
+      broadcaster.broadcast("state", runtimeState.snapshot());
+      res.json({ config: effective });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.post("/start", async (req, res) => {
+    const config = await associationService.getEffectiveConfig();
+    watcherService.start(config.associations, config);
+    res.json({ status: "running" });
+  });
+
+  router.post("/stop", (req, res) => {
+    watcherService.stop();
+    broadcaster.broadcast("state", runtimeState.snapshot());
+    res.json({ status: "stopped" });
+  });
+
+  router.post("/rescan", async (req, res) => {
+    const config = await associationService.getEffectiveConfig();
+    await watcherService.rescanAll(config);
+    res.json({ status: "rescanning" });
+  });
+
+  router.get("/status", (req, res) => {
+    res.json(runtimeState.snapshot());
+  });
+
+  router.get("/history", async (req, res) => {
+    const history = await fileRepository.listHistory();
+    res.json({ items: history });
+  });
+
+  router.get("/events", (req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive"
+    });
+    res.write("event: state\n");
+    res.write(`data: ${JSON.stringify(runtimeState.snapshot())}\n\n`);
+    broadcaster.addClient(res);
+  });
+
+  return router;
+}
+
+async function resolveAllowedRoots(envConfig) {
+  const sourceRoots = envConfig.getAllowedSourceRoots();
+  const destinationRoots = envConfig.getAllowedDestinationRoots();
+  return {
+    source: await listSubdirectories(sourceRoots),
+    destination: await listSubdirectories(destinationRoots)
+  };
+}
+
+async function listSubdirectories(roots) {
+  const results = [];
+  for (const root of roots) {
+    try {
+      const entries = await fs.promises.readdir(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          results.push(toPosixPath(root, entry.name));
+        }
+      }
+    } catch {
+      // Ignore missing roots to keep UI responsive.
+    }
+  }
+  return results;
+}
+
+function toPosixPath(root, name) {
+  const normalizedRoot = root.replace(/\\/g, "/");
+  return path.posix.join(normalizedRoot, name);
+}
