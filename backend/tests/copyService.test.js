@@ -158,7 +158,69 @@ describe("CopyService", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const destinationFile = path.join(destRoot, "nested", "file.txt");
     expect(fs.existsSync(destinationFile)).toBe(true);
+    expect(fs.existsSync(path.join(destRoot, ".tmp"))).toBe(false);
+  });
+
+  it("keeps temp root when other temp files exist", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "nested", "file.txt");
+    createFile(filePath, "content");
+    const tempRoot = path.join(destRoot, ".tmp");
+    fs.mkdirSync(tempRoot, { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, "keep.partial"), "keep");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fs.existsSync(path.join(destRoot, ".tmp"))).toBe(true);
+    expect(fs.existsSync(path.join(destRoot, ".tmp", "keep.partial"))).toBe(true);
+    expect(fs.existsSync(path.join(destRoot, ".tmp", "nested"))).toBe(false);
+  });
+
+  it("ignores cleanup errors", async () => {
+    const root = createTempDir();
+    const sourceRoot = path.join(root, "src");
+    const destRoot = path.join(root, "dst");
+    const filePath = path.join(sourceRoot, "file.txt");
+    createFile(filePath, "content");
+
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: sourceRoot, output: destRoot }]);
+
+    const readdirSpy = vi.spyOn(fs.promises, "readdir").mockRejectedValue(new Error("boom"));
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.enqueue(filePath, { id: "a", input: sourceRoot, output: destRoot }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(true);
+    readdirSpy.mockRestore();
   });
 
   it("marks errors", async () => {

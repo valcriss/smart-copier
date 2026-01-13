@@ -180,5 +180,25 @@ export class CopyService {
     });
 
     await fs.promises.rename(tempPath, destinationPath);
+    await cleanupTempDirectory(path.dirname(tempPath), path.join(destinationRoot, ".tmp"));
+  }
+}
+
+async function cleanupTempDirectory(startDir, tempRoot) {
+  let current = startDir;
+  while (current.startsWith(tempRoot)) {
+    try {
+      const entries = await fs.promises.readdir(current);
+      if (entries.length > 0) {
+        break;
+      }
+      await fs.promises.rmdir(current);
+    } catch {
+      break;
+    }
+    if (current === tempRoot) {
+      break;
+    }
+    current = path.dirname(current);
   }
 }
