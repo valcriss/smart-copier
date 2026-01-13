@@ -118,6 +118,9 @@ export class CopyService {
       this.runtimeState.setAssociationStatus(association.id, "idle", null);
       this.broadcaster.broadcast("state", this.runtimeState.snapshot());
     } catch (error) {
+      if (error?.code === "ENOENT") {
+        return;
+      }
       const message = error instanceof Error ? error.message : "Unknown error";
       if (fingerprint) {
         await this.fileRepository.markFailed(fingerprint, message);

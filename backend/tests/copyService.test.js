@@ -228,6 +228,8 @@ describe("CopyService", () => {
     const runtimeState = new RuntimeState();
     runtimeState.setAssociations([{ id: "a", input: "/in", output: "/out" }]);
 
+    const stableSpy = vi.spyOn(stabilityModule, "isFileStable").mockRejectedValue(new Error("boom"));
+
     const copyService = new CopyService({
       fileRepository: repo,
       envConfig: { getStabilityWindowSeconds: () => 0 },
@@ -242,6 +244,7 @@ describe("CopyService", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(runtimeState.associations[0].status).toBe("error");
+    stableSpy.mockRestore();
   });
 
   it("marks failed copy", async () => {
@@ -500,6 +503,28 @@ describe("CopyService", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1200));
     expect(fs.existsSync(path.join(destRoot, "file.txt"))).toBe(false);
+  });
+
+  it("ignores missing source files", async () => {
+    const repo = new MemoryFileRepository();
+    const runtimeState = new RuntimeState();
+    runtimeState.setAssociations([{ id: "a", input: "/in", output: "/out" }]);
+
+    const copyService = new CopyService({
+      fileRepository: repo,
+      envConfig: { getStabilityWindowSeconds: () => 0 },
+      runtimeState,
+      broadcaster: { broadcast: () => {} }
+    });
+
+    copyService.enqueue("/in/missing.txt", { id: "a", input: "/in", output: "/out" }, {
+      ignoredExtensions: [],
+      dryRun: false
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(runtimeState.associations[0].status).toBe("idle");
+    expect(runtimeState.logs.length).toBe(0);
   });
 });
 
